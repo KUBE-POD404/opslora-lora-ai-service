@@ -1,0 +1,66 @@
+name: Unit Tests
+
+on:
+  workflow_call:
+    outputs:
+      test_status:
+        value: ${{ jobs.test.outputs.test_status }}
+      failure_stage:
+        value: ${{ jobs.test.outputs.failure_stage }}
+      report_url:
+        value: ${{ jobs.test.outputs.report_url }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    outputs:
+      test_status: ${{ steps.result.outputs.status }}
+      failure_stage: ${{ steps.failure.outputs.stage }}
+      report_url: ${{ steps.report.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Install dependencies
+        id: install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+      - name: Ruff lint
+        id: lint
+        run: python -m ruff check .
+      - name: Run pytest
+        id: pytest
+        env:
+          ENVIRONMENT: test
+          DATABASE_URL: sqlite:///./ci_lora_ai_tests.db
+          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
+        run: python -m pytest -q --cov=app --cov-report=xml
+      - id: report
+        if: always()
+        run: echo "url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+      - id: failure
+        if: always()
+        run: |
+          if [ "${{ steps.install.outcome }}" = "failure" ]; then
+            echo "stage=dependency_install_failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.lint.outcome }}" = "failure" ]; then
+            echo "stage=ruff_failed" >> "$GITHUB_OUTPUT"
+          elif [ "${{ steps.pytest.outcome }}" = "failure" ]; then
+            echo "stage=pytest_failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "stage=success" >> "$GITHUB_OUTPUT"
+          fi
+      - id: result
+        if: always()
+        run: |
+          if [ "${{ steps.install.outcome }}" = "failure" ] || [ "${{ steps.lint.outcome }}" = "failure" ] || [ "${{ steps.pytest.outcome }}" = "failure" ]; then
+            echo "status=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
