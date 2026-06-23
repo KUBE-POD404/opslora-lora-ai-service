@@ -2,6 +2,13 @@ name: Docker Build
 
 on:
   workflow_call:
+    secrets:
+      AZURE_TEST_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_TEST_SUBSCRIPTION_ID:
+        required: true
     outputs:
       image_tag:
         value: ${{ jobs.build.outputs.image_tag }}

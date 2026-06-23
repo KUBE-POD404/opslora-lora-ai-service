@@ -95,7 +95,10 @@ jobs:
       security-events: write
       packages: write
     uses: ./.github/workflows/ci-docker-build.yaml
-    secrets: inherit
+    secrets:
+      AZURE_TEST_CLIENT_ID: ${{ secrets.AZURE_TEST_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_TEST_SUBSCRIPTION_ID: ${{ secrets.AZURE_TEST_SUBSCRIPTION_ID }}
 
   update-helm-test-values:
     name: Update lora-ai test values in helm repo
