@@ -1,0 +1,84 @@
+name: SonarCloud Code Quality
+
+on:
+  workflow_call:
+    outputs:
+      quality_gate_status:
+        value: ${{ jobs.code-quality.outputs.quality_gate_status }}
+      notify_tool:
+        value: ${{ jobs.code-quality.outputs.notify_tool }}
+      notify_title:
+        value: ${{ jobs.code-quality.outputs.notify_title }}
+      notify_summary:
+        value: ${{ jobs.code-quality.outputs.notify_summary }}
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    outputs:
+      quality_gate_status: ${{ steps.set_outputs.outputs.quality_gate_status }}
+      notify_tool: ${{ steps.set_outputs.outputs.notify_tool }}
+      notify_title: ${{ steps.set_outputs.outputs.notify_title }}
+      notify_summary: ${{ steps.set_outputs.outputs.notify_summary }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require SonarCloud token
+        run: |
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "SONAR_TOKEN repository secret is required for SonarCloud."
+            exit 1
+          fi
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - name: Generate coverage report
+        env:
+          ENVIRONMENT: test
+          DATABASE_URL: sqlite:///./ci_lora_ai_sonar.db
+          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pytest -q --cov=app --cov-report=xml
+      - name: Cache SonarCloud scanner
+        uses: actions/cache@v4
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonarcloud
+      - name: SonarCloud scan and quality gate
+        id: sonar
+        uses: SonarSource/sonarqube-scan-action@v6
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION || 'kube-pod404-1' }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY || github.event.repository.name }}
+            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.timeout=300
+        continue-on-error: true
+      - name: Set outputs
+        id: set_outputs
+        if: always()
+        run: |
+          STATUS="PASSED"
+          TITLE="SonarCloud Passed"
+          SUMMARY="SonarCloud quality gate passed"
+          if [ "${{ steps.sonar.outcome }}" = "failure" ]; then
+            STATUS="FAILED"
+            TITLE="SonarCloud Failed"
+            SUMMARY="SonarCloud scan or quality gate failed"
+          fi
+          echo "quality_gate_status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "notify_tool=sonarcloud" >> "$GITHUB_OUTPUT"
+          echo "notify_title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "notify_summary=$SUMMARY" >> "$GITHUB_OUTPUT"
+      - name: Fail if SonarCloud failed
+        if: ${{ steps.sonar.outcome == 'failure' }}
+        run: exit 1

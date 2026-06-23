@@ -1,275 +1,119 @@
-name: Lora AI PR Gates
+name: Lora AI Pipeline
 
 on:
   pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-  workflow_dispatch:
+    types: [opened, synchronize]
 
 concurrency:
-  group: lora-ai-pr-${{ github.event.pull_request.number || github.ref }}
+  group: opslora-lora-ai-service-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
-  security-events: write
-
-env:
-  PYTHON_VERSION: "3.12"
-  LOCAL_IMAGE_NAME: opslora-lora-ai-service
 
 jobs:
-  tests:
-    name: Tests and lint
+  get-email:
     runs-on: ubuntu-latest
+    outputs:
+      email: ${{ steps.author.outputs.email }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-
-      - name: Ruff lint
-        run: python -m ruff check .
-
-      - name: Pytest with coverage
-        env:
-          ENVIRONMENT: test
-          DATABASE_URL: sqlite:///./ci_lora_ai_tests.db
-          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
-        run: python -m pytest -q --cov=app --cov-report=xml
-
-  migrations:
-    name: Alembic migration check
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-
-      - name: Apply Alembic migrations from empty DB
-        env:
-          ENVIRONMENT: test
-          DATABASE_URL: sqlite:///./ci_lora_ai_migrations.db
-          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
-        run: python -m alembic upgrade head
-
-  sast:
-    name: CodeQL SAST
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: python
-
-      - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v3
-        with:
-          category: /language:python
-
-  sonarcloud:
-    name: SonarCloud quality gate
-    needs:
-      - tests
-      - migrations
-    runs-on: ubuntu-latest
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Require SonarCloud token
+      - id: author
         run: |
-          if [ -z "${SONAR_TOKEN}" ]; then
-            echo "SONAR_TOKEN repository secret is required for SonarCloud quality gate." >&2
-            exit 1
-          fi
+          SHA="${{ github.event.pull_request.head.sha }}"
+          EMAIL=$(git show -s --format='%ae' "$SHA" || echo "")
+          echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+  unit-tests:
+    uses: ./.github/workflows/ci-test.yaml
 
-      - name: Generate coverage report
-        env:
-          ENVIRONMENT: test
-          DATABASE_URL: sqlite:///./ci_lora_ai_sonar.db
-          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt -r requirements-dev.txt
-          python -m pytest -q --cov=app --cov-report=xml
+  migration-check:
+    uses: ./.github/workflows/ci-migration.yaml
+    secrets: inherit
 
-      - name: Run SonarCloud scan and wait for quality gate
-        uses: SonarSource/sonarqube-scan-action@v6
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        with:
-          args: >
-            -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION || 'kube-pod404' }}
-            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY || 'KUBE-POD404_opslora-lora-ai-service' }}
-            -Dsonar.qualitygate.wait=true
-            -Dsonar.qualitygate.timeout=300
+  sonar-scan:
+    needs: [unit-tests, migration-check]
+    uses: ./.github/workflows/ci-sonar-check.yaml
+    secrets: inherit
 
-  dependency-scan:
-    name: Snyk dependency scan
-    needs: sonarcloud
+  snyk-scan:
+    needs: sonar-scan
+    uses: ./.github/workflows/ci-snyk-check.yaml
+    secrets: inherit
+
+  notify:
+    needs: [unit-tests, migration-check, sonar-scan, snyk-scan, get-email]
+    if: ${{ always() &&
+      (needs.unit-tests.result == 'failure' ||
+       needs.migration-check.result == 'failure' ||
+       needs.sonar-scan.outputs.quality_gate_status == 'FAILED' ||
+       needs.snyk-scan.outputs.snyk_status == 'failure') }}
     runs-on: ubuntu-latest
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Require Snyk token
-        run: |
-          if [ -z "${SNYK_TOKEN}" ]; then
-            echo "SNYK_TOKEN repository secret is required for dependency scanning." >&2
-            exit 1
-          fi
-
-      - name: Run Snyk for Python dependencies
-        uses: snyk/actions/python@v1
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Unit Test Notification
+        if: ${{ needs.unit-tests.result == 'failure' }}
+        uses: ./.github/actions/notification-action
         with:
-          args: --file=requirements.txt --severity-threshold=high --sarif-file-output=snyk.sarif
+          pipeline_name: ${{ github.workflow }}
+          repository_name: ${{ github.repository }}
+          failure_reason: ${{ needs.unit-tests.outputs.failure_stage }}
+          author: ${{ github.event.pull_request.user.login }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          mail_from: ${{ secrets.MAIL_FROM }}
+          mail_to: ${{ needs.get-email.outputs.email }}
+          slack_webhook: ${{ secrets.SLACK_INCOMING_WEBHOOK }}
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          report_url: ${{ needs.unit-tests.outputs.report_url }}
 
-      - name: Upload Snyk SARIF
-        if: always() && hashFiles('snyk.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
+      - name: Migration Check Notification
+        if: ${{ needs.migration-check.result == 'failure' }}
+        uses: ./.github/actions/notification-action
         with:
-          sarif_file: snyk.sarif
+          pipeline_name: ${{ github.workflow }}
+          repository_name: ${{ github.repository }}
+          failure_reason: ${{ needs.migration-check.outputs.failure_stage }}
+          author: ${{ github.event.pull_request.user.login }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          mail_from: ${{ secrets.MAIL_FROM }}
+          mail_to: ${{ needs.get-email.outputs.email }}
+          slack_webhook: ${{ secrets.SLACK_INCOMING_WEBHOOK }}
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          report_url: ${{ needs.migration-check.outputs.report_url }}
 
-  container-scan:
-    name: Container build and scan
-    needs: dependency-scan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      security-events: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build image locally
-        uses: docker/build-push-action@v6
+      - name: Sonar Notification
+        if: ${{ needs.sonar-scan.outputs.quality_gate_status == 'FAILED' }}
+        uses: ./.github/actions/notification-action
         with:
-          context: .
-          load: true
-          push: false
-          tags: ${{ env.LOCAL_IMAGE_NAME }}:pr-${{ github.sha }}
+          pipeline_name: ${{ github.workflow }}
+          repository_name: ${{ github.repository }}
+          failure_reason: ${{ needs.sonar-scan.outputs.notify_summary }}
+          author: ${{ github.event.pull_request.user.login }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          mail_from: ${{ secrets.MAIL_FROM }}
+          mail_to: ${{ needs.get-email.outputs.email }}
+          slack_webhook: ${{ secrets.SLACK_INCOMING_WEBHOOK }}
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          report_url: https://sonarcloud.io/dashboard?id=${{ vars.SONAR_PROJECT_KEY || github.event.repository.name }}
 
-      - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.33.1
+      - name: Snyk Notification
+        if: ${{ needs.snyk-scan.outputs.snyk_status == 'failure' }}
+        uses: ./.github/actions/notification-action
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          format: sarif
-          output: trivy-fs.sarif
-
-      - name: Upload filesystem scan SARIF
-        if: always() && hashFiles('trivy-fs.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-fs.sarif
-
-      - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          image-ref: ${{ env.LOCAL_IMAGE_NAME }}:pr-${{ github.sha }}
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          format: sarif
-          output: trivy-image.sarif
-
-      - name: Upload image scan SARIF
-        if: always() && hashFiles('trivy-image.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image.sarif
-
-  pr-required-gates:
-    name: PR required gates
-    runs-on: ubuntu-latest
-    needs:
-      - tests
-      - migrations
-      - sast
-      - sonarcloud
-      - dependency-scan
-      - container-scan
-    if: always()
-    steps:
-      - name: Enforce required PR gates
-        run: |
-          failures=0
-          for job in \
-            "tests:${{ needs.tests.result }}" \
-            "migrations:${{ needs.migrations.result }}" \
-            "sast:${{ needs.sast.result }}" \
-            "sonarcloud:${{ needs.sonarcloud.result }}" \
-            "dependency-scan:${{ needs.dependency-scan.result }}" \
-            "container-scan:${{ needs.container-scan.result }}"; do
-            name="${job%%:*}"
-            result="${job#*:}"
-            echo "$name => $result"
-            if [ "$result" != "success" ]; then
-              failures=$((failures + 1))
-            fi
-          done
-          if [ "$failures" -ne 0 ]; then
-            echo "$failures required gate(s) failed."
-            exit 1
-          fi
+          pipeline_name: ${{ github.workflow }}
+          repository_name: ${{ github.repository }}
+          failure_reason: ${{ needs.snyk-scan.outputs.notify_summary }}
+          author: ${{ github.event.pull_request.user.login }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          mail_from: ${{ secrets.MAIL_FROM }}
+          mail_to: ${{ needs.get-email.outputs.email }}
+          slack_webhook: ${{ secrets.SLACK_INCOMING_WEBHOOK }}
+          workflow_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          report_url: https://app.snyk.io
