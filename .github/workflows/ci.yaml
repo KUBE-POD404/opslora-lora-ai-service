@@ -124,6 +124,25 @@ jobs:
             exit 1
           fi
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Generate coverage report
+        env:
+          ENVIRONMENT: test
+          DATABASE_URL: sqlite:///./ci_lora_ai_sonar.db
+          ENABLE_AZURE_FOUNDRY_FALLBACK: "false"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+          python -m pytest -q --cov=app --cov-report=xml
+
       - name: Run SonarCloud scan and wait for quality gate
         uses: SonarSource/sonarqube-scan-action@v6
         env:

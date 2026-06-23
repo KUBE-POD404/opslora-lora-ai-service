@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
@@ -11,15 +11,22 @@ from app.schemas import ProviderHealth, ProvidersHealthResponse
 router = APIRouter(tags=["health"])
 
 
+def get_router(settings: Annotated[Settings, Depends(get_settings)]) -> ProviderRouter:
+    return ProviderRouter(settings)
+
+
 @router.get("/health")
-async def health(settings: Settings = Depends(get_settings)) -> dict[str, str]:
+async def health(settings: Annotated[Settings, Depends(get_settings)]) -> dict[str, str]:
     return {"status": "ok", "service": settings.service_name, "environment": settings.environment}
 
 
-@router.get("/health/providers", response_model=ProvidersHealthResponse)
-async def provider_health(settings: Settings = Depends(get_settings)) -> ProvidersHealthResponse:
-    statuses = await ProviderRouter(settings).health()
+@router.get("/health/providers")
+async def providers_health(
+    settings: Annotated[Settings, Depends(get_settings)],
+    provider_router: Annotated[ProviderRouter, Depends(get_router)],
+) -> ProvidersHealthResponse:
+    statuses = await provider_router.health()
     return ProvidersHealthResponse(
         primary=settings.primary_ai_provider,
-        providers=[ProviderHealth(**asdict(status)) for status in statuses],
+        providers=[ProviderHealth(**status.__dict__) for status in statuses],
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 
 from app.core.config import Settings
@@ -21,6 +23,7 @@ class AzureFoundryProvider:
         )
 
     async def health(self) -> ProviderStatus:
+        await asyncio.sleep(0)
         if not self.configured:
             return ProviderStatus(self.name, configured=False, available=False, detail="missing endpoint/api key/deployment")
         return ProviderStatus(self.name, configured=True, available=True, detail="configured")

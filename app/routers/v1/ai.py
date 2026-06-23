@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,7 +23,7 @@ from app.services.knowledge import citations_for, format_context, ingest_knowled
 router = APIRouter(prefix="/ai", tags=["ai"])
 
 
-def get_router(settings: Settings = Depends(get_settings)) -> ProviderRouter:
+def get_router(settings: Annotated[Settings, Depends(get_settings)]) -> ProviderRouter:
     return ProviderRouter(settings)
 
 
@@ -31,9 +32,10 @@ async def ai_health() -> dict[str, str]:
     return {"status": "ok", "service": "lora-ai"}
 
 
-@router.get("/providers", response_model=ProvidersHealthResponse)
+@router.get("/providers")
 async def provider_health(
-    settings: Settings = Depends(get_settings), provider_router: ProviderRouter = Depends(get_router)
+    settings: Annotated[Settings, Depends(get_settings)],
+    provider_router: Annotated[ProviderRouter, Depends(get_router)],
 ) -> ProvidersHealthResponse:
     statuses = await provider_router.health()
     return ProvidersHealthResponse(
@@ -42,19 +44,26 @@ async def provider_health(
     )
 
 
-@router.post("/knowledge/sources", response_model=KnowledgeIngestResponse)
+@router.post("/knowledge/sources")
 def ingest_source(
-    request: KnowledgeIngestRequest, db: Session = Depends(get_db)
+    request: KnowledgeIngestRequest,
+    db: Annotated[Session, Depends(get_db)],
 ) -> KnowledgeIngestResponse:
     source, chunk_count = ingest_knowledge(db, request)
     return KnowledgeIngestResponse(source_id=source.id, chunks_created=chunk_count, status=source.status)
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post(
+    "/chat",
+    responses={
+        404: {"description": "Conversation not found for organization"},
+        503: {"description": "AI provider unavailable"},
+    },
+)
 async def chat(
     request: ChatRequest,
-    db: Session = Depends(get_db),
-    provider_router: ProviderRouter = Depends(get_router),
+    db: Annotated[Session, Depends(get_db)],
+    provider_router: Annotated[ProviderRouter, Depends(get_router)],
 ) -> ChatResponse:
     conversation = _get_or_create_conversation(db, request)
     retrieved = retrieve_context(db, organization_id=request.organization_id, query=request.message)
