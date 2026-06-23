@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     azure_ai_foundry_deployment: str = Field(default="", validation_alias="AZURE_AI_FOUNDRY_DEPLOYMENT")
     azure_ai_foundry_timeout_seconds: int = Field(default=30, validation_alias="AZURE_AI_FOUNDRY_TIMEOUT_SECONDS")
 
-    vector_url: str = Field(default="http://qdrant:6333", validation_alias="VECTOR_URL")
+    vector_url: str = Field(default="", validation_alias="VECTOR_URL")
 
     @property
     def hermes_api_key(self) -> str:
