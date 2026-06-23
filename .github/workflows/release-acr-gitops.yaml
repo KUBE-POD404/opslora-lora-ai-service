@@ -1,0 +1,162 @@
+name: Lora AI service Image workflow pipeline
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  security-events: write
+
+concurrency:
+  group: lora-ai-acr-gitops-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: opslora-lora-ai-service
+  HELM_REPO: KUBE-POD404/opslora-helm-charts
+  HELM_REPO_BRANCH: test/opslora-helm-test
+  CHART_VALUES_FILE: opslora-helm/apps/lora-ai/values-azure-test.yaml
+
+jobs:
+  gate:
+    name: approved build-label gate
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.gate.outputs.should_build }}
+    steps:
+      - id: gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+          PR_LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "${PR_MERGED}" == "true" ]] && echo "${PR_LABELS}" | jq -e 'index("build")' >/dev/null; then
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Merged PR with label 'build' is required."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-scan-push:
+    name: Build, scan, and push to ACR
+    needs: gate
+    if: ${{ needs.gate.outputs.should_build == 'true' }}
+    runs-on: ubuntu-latest
+    environment: azure-test
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+      image_repository: ${{ steps.meta.outputs.image }}
+    env:
+      ACR_NAME: ${{ vars.AZURE_TEST_ACR_NAME }}
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_TEST_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_TEST_SUBSCRIPTION_ID }}
+
+      - name: Resolve ACR metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ACR_NAME}" ]; then
+            echo "Missing GitHub variable AZURE_TEST_ACR_NAME." >&2
+            exit 1
+          fi
+          login_server="$(az acr show --name "${ACR_NAME}" --query loginServer -o tsv)"
+          tag="azure-test-${{ github.run_number }}-${GITHUB_SHA::7}"
+          image="${login_server}/${IMAGE_REPOSITORY}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Azure Container Registry
+        shell: bash
+        run: az acr login --name "${ACR_NAME}"
+
+      - name: Build image locally for scan
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+
+      - name: Trivy image scan before push
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-image.sarif
+
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+
+      - name: Push immutable image tags to ACR
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker tag "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}"
+          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}"
+
+  update-helm-values:
+    name: Update lora-ai test values in helm repo
+    needs: build-scan-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Helm repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HELM_REPO }}
+          ref: ${{ env.HELM_REPO_BRANCH }}
+          token: ${{ secrets.HELM_REPO_TOKEN }}
+          path: helm-repo
+
+      - name: Install yq
+        uses: mikefarah/yq@v4.47.2
+
+      - name: Update image repository and tag
+        working-directory: helm-repo
+        shell: bash
+        env:
+          IMAGE_REPOSITORY: ${{ needs.build-scan-push.outputs.image_repository }}
+          IMAGE_TAG: ${{ needs.build-scan-push.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          test -f "${CHART_VALUES_FILE}"
+          yq -i '.image.repository = strenv(IMAGE_REPOSITORY) | .image.tag = strenv(IMAGE_TAG)' "${CHART_VALUES_FILE}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${CHART_VALUES_FILE}"
+          if git diff --cached --quiet; then
+            echo "Helm values already current."
+            exit 0
+          fi
+          git commit -m "ci(lora-ai): update azure test ACR image to ${IMAGE_TAG}"
+          git push origin "HEAD:${HELM_REPO_BRANCH}"
