@@ -8,6 +8,7 @@ from app.database import Base, engine
 from app.main import app
 from app.providers.base import CompletionResult
 from app.routers.v1.ai import get_router
+from app.services.knowledge import retrieve_context
 
 
 class FakeProviderRouter:
@@ -63,3 +64,35 @@ def test_ingest_knowledge_and_chat_returns_citations():
     assert "adoption dropped" in chat_body["citations"][0]["snippet"]
 
     app.dependency_overrides.clear()
+
+
+def test_retrieval_prefers_exact_term_matches():
+    Base.metadata.create_all(bind=engine)
+    client = TestClient(app)
+    organization_id = f"org-{uuid.uuid4()}"
+
+    for content in (
+        "The brisket lunch note is unrelated.",
+        "The customer has renewal risk because adoption dropped.",
+    ):
+        response = client.post(
+            "/api/v1/ai/knowledge/sources",
+            json={
+                "organization_id": organization_id,
+                "user_id": "user-1",
+                "source_type": "note",
+                "content": content,
+            },
+        )
+        assert response.status_code == 200
+
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        retrieved = retrieve_context(db, organization_id=organization_id, query="renewal risk")
+    finally:
+        db.close()
+
+    assert retrieved
+    assert "renewal risk" in retrieved[0].chunk.content.lower()

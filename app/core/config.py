@@ -31,6 +31,16 @@ def _secret(name: str, default: str | None = None, *, required: bool = False) ->
     return value or ""
 
 
+def escape_configparser_value(value: str) -> str:
+    """Escape values written into Alembic/ConfigParser config options.
+
+    ConfigParser treats ``%`` as interpolation syntax. SQLAlchemy URLs commonly
+    contain percent-encoded passwords or query parameters, so Alembic values must
+    double literal percent signs before calling ``Config.set_main_option``.
+    """
+    return value.replace("%", "%%")
+
+
 _load_env_files()
 
 
