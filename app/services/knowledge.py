@@ -134,7 +134,13 @@ def _rank_chunk(
     chunk: AIKnowledgeChunk, source: AIKnowledgeSource, terms: Counter[str]
 ) -> RetrievedChunk:
     text = chunk.content.lower()
-    score = sum(text.count(term) * weight for term, weight in terms.items())
+    chunk_terms = Counter(_terms(chunk.content))
+    exact_score = sum(chunk_terms.get(term, 0) * weight * 3 for term, weight in terms.items())
+    substring_score = sum(text.count(term) * weight for term, weight in terms.items())
+    coverage_score = sum(1 for term in terms if chunk_terms.get(term, 0)) * 5
+    phrase = " ".join(terms)
+    phrase_score = 10 if len(terms) > 1 and phrase in text else 0
+    score = exact_score + substring_score + coverage_score + phrase_score
     return RetrievedChunk(chunk=chunk, source=source, score=score)
 
 
