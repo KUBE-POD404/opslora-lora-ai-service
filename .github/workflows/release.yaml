@@ -1,0 +1,97 @@
+name: Lora AI Release Pipeline
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  promote:
+    name: Promote lora-ai release to Azure prod
+    runs-on: ubuntu-latest
+    environment: azure-prod
+
+    env:
+      SERVICE: lora-ai
+      IMAGE_REPOSITORY: opslora-lora-ai-service
+      PROD_ACR_NAME: ${{ vars.AZURE_PROD_ACR_NAME }}
+      PROD_ACR_LOGIN_SERVER: ${{ vars.AZURE_PROD_ACR_LOGIN_SERVER }}
+      TEST_ACR_RESOURCE_ID: ${{ vars.AZURE_TEST_ACR_RESOURCE_ID }}
+
+    steps:
+      - name: Validate release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ github.event.release.tag_name }}'
+          REGEX='^v[0-9]+\.[0-9]+\.[0-9]+(-((alpha|beta|rc)\.[0-9]+))?$'
+          if [[ ! "$TAG" =~ $REGEX ]]; then
+            echo "Invalid tag format: $TAG" >&2
+            exit 1
+          fi
+          echo "version=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release commit
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG='${{ github.event.release.tag_name }}'
+          SHA=$(git rev-list -n 1 "$TAG")
+          SHORT_SHA="${SHA::7}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag $TAG -> commit $SHA -> short $SHORT_SHA"
+
+      - name: Azure login to prod
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_PROD_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_PROD_SUBSCRIPTION_ID }}
+
+      - name: Import tested image into prod ACR
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.sha.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          for required in PROD_ACR_NAME PROD_ACR_LOGIN_SERVER TEST_ACR_RESOURCE_ID IMAGE_REPOSITORY VERSION SHORT_SHA; do
+            if [ -z "${!required}" ]; then
+              echo "Missing required value: $required" >&2
+              exit 1
+            fi
+          done
+          echo "Importing tested image from test ACR: $IMAGE_REPOSITORY:$SHORT_SHA"
+          echo "Publishing prod image: $PROD_ACR_LOGIN_SERVER/$IMAGE_REPOSITORY:$VERSION"
+          az acr import --name "$PROD_ACR_NAME" --source "$IMAGE_REPOSITORY:$SHORT_SHA" --registry "$TEST_ACR_RESOURCE_ID" --image "$IMAGE_REPOSITORY:$VERSION" --image "$IMAGE_REPOSITORY:$SHORT_SHA" --force
+          found=$(az acr repository show-tags --name "$PROD_ACR_NAME" --repository "$IMAGE_REPOSITORY" --query "[?@=='$VERSION'] | [0]" -o tsv)
+          if [ "$found" != "$VERSION" ]; then
+            echo "Prod ACR tag verification failed for $IMAGE_REPOSITORY:$VERSION" >&2
+            exit 1
+          fi
+
+      - name: Open Helm prod promotion PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HELM_REPO_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "Missing HELM_REPO_TOKEN secret" >&2
+            exit 1
+          fi
+          gh workflow run 'Promote Azure Prod Image' -R KUBE-POD404/opslora-helm-charts --ref main -f service="$SERVICE" -f image_tag="$VERSION" -f image_repository="$PROD_ACR_LOGIN_SERVER/$IMAGE_REPOSITORY" -f base_branch="main"
+          echo "Dispatched Helm prod promotion for $SERVICE:$VERSION"
