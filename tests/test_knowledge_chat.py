@@ -8,7 +8,7 @@ from app.database import Base, engine
 from app.main import app
 from app.providers.base import CompletionResult
 from app.routers.v1.ai import get_router
-from app.services.knowledge import retrieve_context
+from app.services.knowledge import format_context, retrieve_context
 
 
 class FakeProviderRouter:
@@ -96,3 +96,35 @@ def test_retrieval_prefers_exact_term_matches():
 
     assert retrieved
     assert "renewal risk" in retrieved[0].chunk.content.lower()
+
+
+def test_retrieval_context_formatting_after_ranking():
+    Base.metadata.create_all(bind=engine)
+    client = TestClient(app)
+    organization_id = f"org-{uuid.uuid4()}"
+
+    response = client.post(
+        "/api/v1/ai/knowledge/sources",
+        json={
+            "organization_id": organization_id,
+            "user_id": "user-1",
+            "source_type": "note",
+            "title": "Renewal note",
+            "content": "Renewal risk is high. Renewal owner should call today.",
+        },
+    )
+    assert response.status_code == 200
+
+    from app.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        retrieved = retrieve_context(db, organization_id=organization_id, query="renewal owner")
+    finally:
+        db.close()
+
+    context = format_context(retrieved)
+    assert "[source 1]" in context
+    assert "source_id=" in context
+    assert "chunk_id=" in context
+    assert "renewal" in context.lower()
