@@ -29,10 +29,31 @@ jobs:
           fetch-depth: 0
 
       - id: author
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
         run: |
-          SHA="${{ github.event.pull_request.head.sha }}"
-          EMAIL=$(git show -s --format='%ae' "$SHA")
-          NAME=$(git show -s --format='%an' "$SHA")
+          set -euo pipefail
+          SHA="$PR_HEAD_SHA"
+
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$SHA" || true
+          fi
+
+          if ! git cat-file -e "${SHA}^{commit}" 2>/dev/null && [ -n "$PR_MERGE_SHA" ]; then
+            SHA="$PR_MERGE_SHA"
+            git fetch --no-tags --depth=1 origin "$SHA" || true
+          fi
+
+          if git cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+            EMAIL=$(git show -s --format='%ae' "$SHA")
+            NAME=$(git show -s --format='%an' "$SHA")
+          else
+            EMAIL=""
+            NAME="$PR_USER_LOGIN"
+          fi
+
           echo "email=$EMAIL" >> "$GITHUB_OUTPUT"
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
 
