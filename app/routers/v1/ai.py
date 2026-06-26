@@ -15,10 +15,13 @@ from app.schemas import (
     ChatResponse,
     KnowledgeIngestRequest,
     KnowledgeIngestResponse,
+    OperationsBriefingResponse,
+    OperationsSnapshotRequest,
     ProviderHealth,
     ProvidersHealthResponse,
 )
 from app.services.knowledge import citations_for, format_context, ingest_knowledge, retrieve_context
+from app.services.operations_briefing import build_operations_briefing
 
 router = APIRouter(prefix="/ai", tags=["ai"])
 
@@ -51,6 +54,11 @@ def ingest_source(
 ) -> KnowledgeIngestResponse:
     source, chunk_count = ingest_knowledge(db, request)
     return KnowledgeIngestResponse(source_id=source.id, chunks_created=chunk_count, status=source.status)
+
+
+@router.post("/operations/briefing")
+def operations_briefing(request: OperationsSnapshotRequest) -> OperationsBriefingResponse:
+    return build_operations_briefing(request)
 
 
 @router.post(
