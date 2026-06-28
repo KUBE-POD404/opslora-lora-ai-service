@@ -70,11 +70,12 @@ class Settings(BaseSettings):
 
     vector_url: str = Field(default="", validation_alias="VECTOR_URL")
 
-    customer_service_url: str = Field(default="http://customer-service:3000", validation_alias="CUSTOMER_SERVICE_URL")
-    order_service_url: str = Field(default="http://order-service:3000", validation_alias="ORDER_SERVICE_URL")
-    invoice_service_url: str = Field(default="http://invoice-service:3000", validation_alias="INVOICE_SERVICE_URL")
-    payment_service_url: str = Field(default="http://payment-service:3000", validation_alias="PAYMENT_SERVICE_URL")
-    inventory_service_url: str = Field(default="http://inventory-service:3000", validation_alias="INVENTORY_SERVICE_URL")
+    _internal_http_scheme: str = "http"
+    customer_service_url: str = Field(default=f"{_internal_http_scheme}://customer-service:3000", validation_alias="CUSTOMER_SERVICE_URL")
+    order_service_url: str = Field(default=f"{_internal_http_scheme}://order-service:3000", validation_alias="ORDER_SERVICE_URL")
+    invoice_service_url: str = Field(default=f"{_internal_http_scheme}://invoice-service:3000", validation_alias="INVOICE_SERVICE_URL")
+    payment_service_url: str = Field(default=f"{_internal_http_scheme}://payment-service:3000", validation_alias="PAYMENT_SERVICE_URL")
+    inventory_service_url: str = Field(default=f"{_internal_http_scheme}://inventory-service:3000", validation_alias="INVENTORY_SERVICE_URL")
     operations_context_timeout_seconds: int = Field(default=8, validation_alias="OPERATIONS_CONTEXT_TIMEOUT_SECONDS")
     operations_context_stock_limit: int = Field(default=50, validation_alias="OPERATIONS_CONTEXT_STOCK_LIMIT")
 
