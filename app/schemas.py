@@ -17,6 +17,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     use_fallback: bool = True
+    preferred_provider: str | None = None
 
 
 class ChatResponse(BaseModel):

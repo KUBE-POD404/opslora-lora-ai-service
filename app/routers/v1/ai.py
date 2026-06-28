@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -21,6 +21,7 @@ from app.schemas import (
     ProvidersHealthResponse,
 )
 from app.services.knowledge import citations_for, format_context, ingest_knowledge, retrieve_context
+from app.services.live_context import fetch_live_operations_snapshot, format_live_operations_context
 from app.services.operations_briefing import build_operations_briefing
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -72,22 +73,34 @@ async def chat(
     request: ChatRequest,
     db: Annotated[Session, Depends(get_db)],
     provider_router: Annotated[ProviderRouter, Depends(get_router)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    authorization: Annotated[str | None, Header()] = None,
 ) -> ChatResponse:
     conversation = _get_or_create_conversation(db, request)
     retrieved = retrieve_context(db, organization_id=request.organization_id, query=request.message)
-    context = format_context(retrieved)
+    knowledge_context = format_context(retrieved)
+    live_snapshot = await fetch_live_operations_snapshot(settings, authorization=authorization)
+    live_context = format_live_operations_context(live_snapshot)
     prompt = (
         "You are Lora, the Opslora tenant-aware business assistant.\n"
-        "Use only the supplied tenant knowledge context and the user's message.\n"
-        "If the context is insufficient, say what is missing instead of inventing facts.\n"
+        "Use only the supplied tenant knowledge context, live tenant operations snapshot, and the user's message.\n"
+        "Never answer with data from another organization or another conversation.\n"
+        "If live tenant data says there are orders, invoices, customers, payments, or products, list those facts directly.\n"
+        "If live tenant data is unavailable, say that live service data could not be fetched instead of inventing facts.\n"
         "Return a concise business answer.\n\n"
         f"organization_id={request.organization_id}\n"
-        f"user_id={request.user_id}\n\n"
-        f"Tenant knowledge context:\n{context}\n\n"
+        f"user_id={request.user_id}\n"
+        f"conversation_id={conversation.id}\n\n"
+        f"Tenant knowledge context:\n{knowledge_context}\n\n"
+        f"Live tenant operations context:\n{live_context}\n\n"
         f"User message:\n{request.message}"
     )
     try:
-        result, fallback_used = await provider_router.complete(prompt, allow_fallback=request.use_fallback)
+        result, fallback_used = await provider_router.complete(
+            prompt,
+            allow_fallback=request.use_fallback,
+            preferred_provider=request.preferred_provider,
+        )
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=503, detail=f"AI provider unavailable: {exc}") from exc

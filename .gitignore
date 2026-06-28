@@ -9,3 +9,4 @@ __pycache__/
 coverage.xml
 htmlcov/
 ci_lora_ai_*.db
+lora_ai_local.db
