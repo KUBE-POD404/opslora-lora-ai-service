@@ -15,7 +15,7 @@ class FakeProviderRouter:
     async def health(self):
         return []
 
-    async def complete(self, prompt: str, *, allow_fallback: bool = True):
+    async def complete(self, prompt: str, *, allow_fallback: bool = True, preferred_provider: str | None = None):
         assert "Tenant knowledge context" in prompt
         assert "renewal risk" in prompt
         return CompletionResult(
