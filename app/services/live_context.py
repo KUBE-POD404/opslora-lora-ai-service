@@ -17,6 +17,8 @@ from app.schemas import (
 )
 from app.services.operations_briefing import build_operations_briefing
 
+EMPTY_LIVE_SNAPSHOT_TEXT = "None in the live tenant snapshot."
+
 
 class LiveContextUnavailable(RuntimeError):
     pass
@@ -184,7 +186,7 @@ def _product(item: dict[str, Any]) -> OperationsProduct:
 
 def _format_orders(items: list[OperationsOrder]) -> str:
     if not items:
-        return "None in the live tenant snapshot."
+        return EMPTY_LIVE_SNAPSHOT_TEXT
     return "\n".join(
         f"- Order {item.id}: customer={item.customer_name or item.customer_id}; "
         f"status={item.status}; total={item.total:.2f}; created_at={item.created_at or 'unknown'}"
@@ -194,7 +196,7 @@ def _format_orders(items: list[OperationsOrder]) -> str:
 
 def _format_invoices(items: list[OperationsInvoice]) -> str:
     if not items:
-        return "None in the live tenant snapshot."
+        return EMPTY_LIVE_SNAPSHOT_TEXT
     return "\n".join(
         f"- Invoice {item.invoice_number or item.id}: order={item.order_id}; "
         f"customer={item.customer_name or 'unknown'}; status={item.status}; total={item.total:.2f}; "
@@ -205,7 +207,7 @@ def _format_invoices(items: list[OperationsInvoice]) -> str:
 
 def _format_customers(items: list[OperationsCustomer]) -> str:
     if not items:
-        return "None in the live tenant snapshot."
+        return EMPTY_LIVE_SNAPSHOT_TEXT
     return "\n".join(
         f"- Customer {item.id}: {item.name or 'unknown'}; status={item.status or 'unknown'}"
         for item in items[:25]
@@ -214,7 +216,7 @@ def _format_customers(items: list[OperationsCustomer]) -> str:
 
 def _format_payments(items: list[OperationsPayment]) -> str:
     if not items:
-        return "None in the live tenant snapshot."
+        return EMPTY_LIVE_SNAPSHOT_TEXT
     return "\n".join(
         f"- Payment {item.id}: invoice={item.invoice_id}; status={item.status}; "
         f"amount={item.amount:.2f} {item.currency or ''}; paid_at={item.paid_at or 'unknown'}"
@@ -226,7 +228,7 @@ def _format_products(
     items: list[OperationsProduct], stock_by_product: dict[int, OperationsStockBalance]
 ) -> str:
     if not items:
-        return "None in the live tenant snapshot."
+        return EMPTY_LIVE_SNAPSHOT_TEXT
     lines = []
     for item in items[:25]:
         stock = stock_by_product.get(item.id)
