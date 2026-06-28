@@ -103,6 +103,39 @@ async def test_fetch_live_operations_snapshot_raises_on_forbidden_service(monkey
         await fetch_live_operations_snapshot(Settings(), authorization="Bearer token")
 
 
+@pytest.mark.asyncio
+async def test_fetch_live_operations_snapshot_loads_products_and_stock(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/v1/customers/":
+            return httpx.Response(200, json=[])
+        if path == "/api/v1/orders/":
+            return httpx.Response(200, json=[])
+        if path == "/api/v1/invoices/":
+            return httpx.Response(200, json=[])
+        if path == "/api/v1/payments/":
+            return httpx.Response(200, json=[])
+        if path == "/api/v1/inventory/products":
+            return httpx.Response(200, json=[{"id": 2, "name": "Widget", "sku": "W-2", "is_active": True}])
+        if path == "/api/v1/inventory/stock/2":
+            return httpx.Response(200, json={"quantity_on_hand": "4", "low_stock_threshold": "5"})
+        return httpx.Response(404, json={"detail": path})
+
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(handler)
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    snapshot = await fetch_live_operations_snapshot(Settings(), authorization="Bearer token")
+
+    assert snapshot is not None
+    assert snapshot.products[0].name == "Widget"
+    assert snapshot.stock_by_product[2].quantity_on_hand == 4
+
+
 def test_empty_live_snapshot_text_constant_is_used_for_empty_sections():
     snapshot = OperationsSnapshotRequest(generated_at="2026-06-28T08:00:00Z")
 
